@@ -8,6 +8,13 @@ Processing static 2D data table, grouping or filtering records, and folding them
 - Output
     - Processing result, which is 2D data table, presented as single csv table, csvs in directory tree or well-designed binary format.
 
+## pipeline
+
+- Using [PEG](https://en.wikipedia.org/wiki/Parsing_expression_grammar) parsing scripts, generating actions.
+- Breaking action down into atomic parts, [topologically sorting](https://en.wikipedia.org/wiki/Topological_sorting) their dependency relations.
+- Executing an action with all dependencies ready each time, caching its result until no one needs it.
+- Emitting final result.
+
 ## script specification
 
 ### quick example
@@ -105,9 +112,16 @@ Reserved id list:
 - **as** introduces a name to the exported result
 - **builtin_action** `avg`, `count`, etc
 
-## pipeline
+## core data structure
 
-- Using [PEG](https://en.wikipedia.org/wiki/Parsing_expression_grammar) parsing scripts, generation actions.
-- Breaking action down into atomic parts, [topologically sorting](https://en.wikipedia.org/wiki/Topological_sorting) their dependency relations.
-- Executing an action with all dependencies ready each time, caching its result until no one needs it.
-- Emitting final result.
+Data represent:
+
+- **`Collection`** represents a collections of record, typically stores a set of references to the original records.
+- **`FoldResult`** represents a fold result of a collection, it binds to a collection and an action pair.
+- **`FoldFunc`** builtin fold action, typically closure or function object.
+
+Script and excution engine:
+
+- **`SymTbl`** maps symbol names to entities, it stores references to entity object.
+- **`Action`** represents a certain action to do, like filtering or folding. There are dependency relations between actions.
+- **`ExeEngine`** stores all actions, sorting and executing them based on their dependency relations.

@@ -1,4 +1,5 @@
 use by_address::ByAddress;
+use std::cmp::{Ordering, PartialOrd};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -14,11 +15,39 @@ use std::hash::{Hash, Hasher};
 /// after, an error msg will be emitted
 ///
 /// It is small enough to be copyable
+#[derive(PartialEq, PartialOrd)]
 pub enum Attr {
     Int(i32),
     Float(f32),
     Bool(bool),
     Str(String),
+}
+
+impl Attr {
+    fn new(ctx: &Ctx, header: &str, raw_attr: &str) -> Self {
+        match ctx.attr_type.get(header).expect(&format!(
+            "Error: header `{}' is not found in context info",
+            header
+        )) {
+            Attr::Int(_) => Attr::Int(raw_attr.parse::<i32>().expect(&format!(
+                "Error: expect int when parsing attribute {}, which value is {}",
+                header, raw_attr
+            ))),
+            Attr::Float(_) => Attr::Float(raw_attr.parse::<f32>().expect(&format!(
+                "Error: expect float when parsing attribute {}, which value is {}",
+                header, raw_attr
+            ))),
+            Attr::Bool(_) => Attr::Bool(match raw_attr {
+                "true" | "True" | "TRUE" | "t" | "T" => true,
+                "false" | "False" | "FALSE" | "f" | "F" => false,
+                _ => panic!(
+                    "Error: expect bool when parsing attribute {}, which value is {}",
+                    header, raw_attr
+                ),
+            }),
+            Attr::Str(_) => Attr::Str(raw_attr.into()),
+        }
+    }
 }
 
 /// Data record, looks up attribute's value by name
@@ -30,38 +59,14 @@ pub struct Record {
 impl Record {
     /// raw_record: vector of (header, value)
     pub fn new(ctx: &Ctx, raw_record: Vec<(&str, &str)>) -> Self {
-        let mut attrs: HashMap<String, Attr> = HashMap::new();
-        raw_record.into_iter().for_each(|e| {
-            let (header, raw_attr) = e;
-            let attr = match ctx.attr_type.get(header).expect(&format!(
-                "Error: header `{}' is not found in context info",
-                header
-            )) {
-                Attr::Int(_) => Attr::Int(raw_attr.parse::<i32>().expect(&format!(
-                    "Error: expect int when parsing attribute {}, which value is {}",
-                    header, raw_attr
-                ))),
-                Attr::Float(_) => Attr::Float(raw_attr.parse::<f32>().expect(&format!(
-                    "Error: expect float when parsing attribute {}, which value is {}",
-                    header, raw_attr
-                ))),
-                Attr::Bool(_) => Attr::Bool(match raw_attr {
-                    "true" | "True" | "TRUE" | "t" | "T" => true,
-                    "false" | "False" | "FALSE" | "f" | "F" => false,
-                    _ => panic!(
-                        "Error: expect bool when parsing attribute {}, which value is {}",
-                        header, raw_attr
-                    ),
-                }),
-                Attr::Str(_) => Attr::Str(raw_attr.into()),
-            };
-            attrs.insert(header.into(), attr);
-        });
+        let attrs: HashMap<String, Attr> = raw_record
+            .into_iter()
+            .map(|(header, raw_attr)| (header.into(), Attr::new(ctx, header, raw_attr)))
+            .collect();
 
         // Hash the group id by rule
         let mut hasher = DefaultHasher::new();
-        ctx.group_by.iter().for_each(|e| {
-            let (attr_name, rule) = e;
+        ctx.group_by.iter().for_each(|(attr_name, rule)| {
             match attrs
                 .get(attr_name)
                 .expect("Error: key attribute is not found")
@@ -150,6 +155,13 @@ pub struct Collection<'a> {
     groups: HashMap<u64, Group<'a>>,
 }
 
+// TODO: This implementation is temporary
+pub struct FilterCond {
+    attr_name: String,
+    val: Attr,
+    ord: Ordering,
+}
+
 impl<'a> Collection<'a> {
     pub fn new(records: Vec<&'a Record>) -> Self {
         let mut groups: HashMap<u64, Group> = HashMap::new();
@@ -167,44 +179,112 @@ impl<'a> Collection<'a> {
     }
 
     /// Filter the collection with predicate, generate new collection
-    // TODO
-    pub fn filter_records(&self /* TODO: filter cond */) -> Self {
-        let groups = self
+    // TODO: Filter cond need reimplementation
+    pub fn filter_records(mut self, filter_cond: FilterCond) -> Self {
+        self.groups = self
             .groups
-            .iter()
-            .map(|e| {
-                let (id, group) = e;
+            .into_iter()
+            .filter_map(|(id, group)| {
                 let records: HashSet<ByAddress<&Record>> = group
                     .records
-                    .clone()
                     .into_iter()
-                    .filter(|_| true /* TODO: filter cond */)
+                    .filter(|record| {
+                        record
+                            .attrs
+                            .get(&filter_cond.attr_name)
+                            .partial_cmp(&Some(&filter_cond.val))
+                            == Some(filter_cond.ord)
+                    })
                     .collect();
-                (
-                    id.to_owned(),
-                    Group {
-                        records,
-                        id: id.to_owned(),
-                    },
-                )
+                if records.is_empty() {
+                    None
+                } else {
+                    Some((
+                        id.to_owned(),
+                        Group {
+                            records,
+                            id: id.to_owned(),
+                        },
+                    ))
+                }
             })
             .collect();
-        Self { groups }
+        self
     }
 
-    // TODO
-    pub fn intersect(&self, other: &Self) -> Self {
-        self.clone()
+    pub fn intersection(mut self, other: &Self) -> Self {
+        self.groups = self
+            .groups
+            .into_iter()
+            .filter_map(|(id, group)| {
+                if let Some(other_group) = other.groups.get(&id) {
+                    let records: HashSet<_> = group
+                        .records
+                        .intersection(&other_group.records)
+                        .map(|x| x.to_owned())
+                        .collect();
+                    if records.is_empty() {
+                        None
+                    } else {
+                        Some((
+                            id.to_owned(),
+                            Group {
+                                records,
+                                id: id.to_owned(),
+                            },
+                        ))
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self
     }
 
-    // TODO
-    pub fn unite(&self, other: &Self) -> Self {
-        self.clone()
+    pub fn union(mut self, other: &Self) -> Self {
+        other.groups.iter().for_each(|(id, other_group)| {
+            if let Some(mut group) = self.groups.get_mut(id) {
+                group.records = group
+                    .records
+                    .union(&other_group.records)
+                    .map(|x| x.to_owned())
+                    .collect();
+            } else {
+                self.groups.insert(id.to_owned(), other_group.to_owned());
+            }
+        });
+        self
     }
 
-    // TODO
-    pub fn differ(&self, other: &Self) -> Self {
-        self.clone()
+    pub fn difference(mut self, other: &Self) -> Self {
+        self.groups = self
+            .groups
+            .into_iter()
+            .filter_map(|(id, group)| {
+                if let Some(other_group) = other.groups.get(&id) {
+                    let records: HashSet<_> = group
+                        .records
+                        .difference(&other_group.records)
+                        .map(|x| x.to_owned())
+                        .collect();
+                    if records.is_empty() {
+                        None
+                    } else {
+                        Some((
+                            id.to_owned(),
+                            Group {
+                                records,
+                                id: id.to_owned(),
+                            },
+                        ))
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self
     }
 
     // Handle fold operation
@@ -220,17 +300,16 @@ impl<'a> Collection<'a> {
         let result: HashMap<ByAddress<&Group>, Attr> = self
             .groups
             .iter()
-            .map(|e| {
-                let (_, group) = e;
-                let (sum, count) = group.records.iter().fold((0f32, 0i32), |acc, x| {
-                    let (mut sum, mut count) = acc;
-                    sum += match x.attrs.get(attr_name).unwrap_or(&Attr::Float(0f32)) {
-                        Attr::Int(v) => v.to_owned() as f32,
-                        Attr::Float(v) => v.to_owned(),
-                        _ => panic!("AVG operation should be performed on int or float"),
-                    };
-                    count += 1;
-                    (sum, count)
+            .map(|(_, group)| {
+                let (sum, count) = group.records.iter().fold((0f32, 0i32), |(sum, count), x| {
+                    (
+                        sum + match x.attrs.get(attr_name).unwrap_or(&Attr::Float(0f32)) {
+                            Attr::Int(v) => v.to_owned() as f32,
+                            Attr::Float(v) => v.to_owned(),
+                            _ => panic!("AVG operation should be performed on int or float"),
+                        },
+                        count + 1,
+                    )
                 });
                 (ByAddress(group), Attr::Float(sum / (count as f32)))
             })
@@ -246,8 +325,7 @@ impl<'a> Collection<'a> {
         let result: HashMap<ByAddress<&Group>, Attr> = self
             .groups
             .iter()
-            .map(|e| {
-                let (_, group) = e;
+            .map(|(_, group)| {
                 let sum = group.records.iter().fold(0f32, |acc, x| {
                     acc + match x.attrs.get(attr_name).unwrap_or(&Attr::Float(0f32)) {
                         Attr::Int(v) => v.to_owned() as f32,
@@ -269,10 +347,11 @@ impl<'a> Collection<'a> {
         let result: HashMap<ByAddress<&Group>, Attr> = self
             .groups
             .iter()
-            .map(|e| {
-                let (_, group) = e;
-                let count = group.records.iter().count();
-                (ByAddress(group), Attr::Int(count as i32))
+            .map(|(_, group)| {
+                (
+                    ByAddress(group),
+                    Attr::Int(group.records.iter().count() as i32),
+                )
             })
             .collect();
         FoldResult {

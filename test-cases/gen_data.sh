@@ -1,3 +1,11 @@
+echo -n key0,key1 >> big_data.csv
+ 
+for ((i=0; i<200; ++i)) do
+    echo -n ,attr$i
+done >> big_data.csv
+
+echo >> big_data.csv
+
 for ((i=0; i<100000; ++i)) do
     echo -n $(shuf -i0-16 -n2)
     echo -n " "
